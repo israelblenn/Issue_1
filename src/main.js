@@ -267,6 +267,10 @@ class WebGLLayer {
     this.fisheyeFocusTarget = new Vec2(0.5, 0.5);
     /** @type {number | undefined} */
     this._fisheyeEasePrevTime = undefined;
+
+    document.documentElement.addEventListener("mouseleave", () => {
+      this.fisheyeFocusTarget?.set(0.5, 0.5);
+    });
   }
 
   /**
