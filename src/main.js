@@ -244,7 +244,7 @@ class WebGLLayer {
         fisheyeStrength: {
           name: "uFisheyeStrength",
           type: "1f",
-          value: 0.1, // !! FISHEYE STRENGTH
+          value: 0.1, // !! Mod for FISHEYE STRENGTH
         },
         fisheyeFocus: {
           name: "uFisheyeFocus",
