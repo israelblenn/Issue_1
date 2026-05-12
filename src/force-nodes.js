@@ -48,6 +48,9 @@ const REVERB_BUS_MAKEUP = 2.15;
 // Level baked into the synthetic IR (1 = original IR energy).
 const REVERB_IR_LEVEL = 1.35;
 const VOLUME_LERP = 0.18;
+/** Horizontal px offset at which node audio reaches full L/R pan (StereoPanner ±1). */
+const AUDIO_PAN_PIXEL_SCALE = 340;
+const PAN_LERP = 0.2;
 /** Per-frame lerp for ripple-pass hover saturation (0..1). Lower = slower fade. */
 const HOVER_HIGHLIGHT_LERP = 0.11;
 
@@ -61,6 +64,8 @@ const HOVER_HIGHLIGHT_LERP = 0.11;
  *   sourceNode?: MediaElementAudioSourceNode,
  *   dryGain?: GainNode,
  *   wetGain?: GainNode,
+ *   dryPanner?: StereoPannerNode,
+ *   wetPanner?: StereoPannerNode,
  * }} NodeAudio
  * @typedef {{
  *   el: HTMLDivElement,
@@ -193,8 +198,9 @@ function generateImpulseResponse(ctx, durationSec, decay) {
  * No-op until the shared AudioContext exists (first pointerdown with Web Audio available).
  *
  * @param {number} strength shader uRaindropStrength (typically 32..60)
+ * @param {number} [dropNormX=0.5] horizontal raindrop position 0=left … 1=right of the ripple/viewport
  */
-function playRaindropDripSound(strength) {
+function playRaindropDripSound(strength, dropNormX = 0.5) {
   if (!audioCtx || !reverbConvolver) return;
   if (audioCtx.state === 'suspended') {
     audioCtx.resume().catch(() => {});
@@ -203,6 +209,8 @@ function playRaindropDripSound(strength) {
 
   const t = ctx.currentTime;
   const norm = clamp((strength - 26) / 40, 0.12, 1);
+  // Viewport-centered pan: left side → negative pan (left speaker), right → positive.
+  const pan = clamp((dropNormX - 0.5) * 2, -1, 1);
 
   const osc = ctx.createOscillator();
   osc.type = 'sine';
@@ -213,7 +221,7 @@ function playRaindropDripSound(strength) {
 
   const env = ctx.createGain();
   env.gain.setValueAtTime(0, t);
-  env.gain.linearRampToValueAtTime(0.5 * norm, t + 0.002); // volume
+  env.gain.linearRampToValueAtTime(2 * norm, t + 0.002); // volume
   env.gain.exponentialRampToValueAtTime(0.0005, t + 0.088);
   osc.connect(env);
 
@@ -221,10 +229,16 @@ function playRaindropDripSound(strength) {
   const wetSend = ctx.createGain();
   drySend.gain.value = 0.002 * Math.pow(norm, 0.9); //reverb
   wetSend.gain.value = 0.1 * (0.5 + 0.5 * norm);
+  const oscDryPan = ctx.createStereoPanner();
+  const oscWetPan = ctx.createStereoPanner();
+  oscDryPan.pan.value = pan;
+  oscWetPan.pan.value = pan;
   env.connect(drySend);
   env.connect(wetSend);
-  drySend.connect(ctx.destination);
-  wetSend.connect(reverbConvolver);
+  drySend.connect(oscDryPan);
+  oscDryPan.connect(ctx.destination);
+  wetSend.connect(oscWetPan);
+  oscWetPan.connect(reverbConvolver);
 
   osc.start(t);
   osc.stop(t + 0.1);
@@ -252,10 +266,16 @@ function playRaindropDripSound(strength) {
   const nWet = ctx.createGain();
   nDry.gain.value = 0.024 * norm;
   nWet.gain.value = 0.055 * norm;
+  const noiseDryPan = ctx.createStereoPanner();
+  const noiseWetPan = ctx.createStereoPanner();
+  noiseDryPan.pan.value = pan;
+  noiseWetPan.pan.value = pan;
   ng.connect(nDry);
   ng.connect(nWet);
-  nDry.connect(ctx.destination);
-  nWet.connect(reverbConvolver);
+  nDry.connect(noiseDryPan);
+  noiseDryPan.connect(ctx.destination);
+  nWet.connect(noiseWetPan);
+  noiseWetPan.connect(reverbConvolver);
 
   ns.start(t);
   ns.stop(t + noiseDur + 0.008);
@@ -303,14 +323,22 @@ function connectNodeAudio(audio) {
     }
     const dryGain = audioCtx.createGain();
     const wetGain = audioCtx.createGain();
+    const dryPanner = audioCtx.createStereoPanner();
+    const wetPanner = audioCtx.createStereoPanner();
     dryGain.gain.value = 0;
     wetGain.gain.value = 0;
+    dryPanner.pan.value = 0;
+    wetPanner.pan.value = 0;
     audio.sourceNode.connect(dryGain);
-    dryGain.connect(audioCtx.destination);
+    dryGain.connect(dryPanner);
+    dryPanner.connect(audioCtx.destination);
     audio.sourceNode.connect(wetGain);
-    wetGain.connect(reverbConvolver);
+    wetGain.connect(wetPanner);
+    wetPanner.connect(reverbConvolver);
     audio.dryGain = dryGain;
     audio.wetGain = wetGain;
+    audio.dryPanner = dryPanner;
+    audio.wetPanner = wetPanner;
     // Element.volume is no longer the master gain once we're routing through
     // Web Audio—the dry/wet gains take over.
     audio.element.volume = 1;
@@ -442,11 +470,22 @@ function updateNodeAudio(nodes, cursor, hovered) {
     connectNodeAudio(audio);
 
     let effectiveLevel;
-    if (audio.dryGain && audio.wetGain) {
+    if (audio.dryGain && audio.wetGain && audio.dryPanner && audio.wetPanner) {
       const dry = audio.dryGain.gain.value + (targetDry - audio.dryGain.gain.value) * VOLUME_LERP;
       const wet = audio.wetGain.gain.value + (targetWet - audio.wetGain.gain.value) * VOLUME_LERP;
       audio.dryGain.gain.value = clamp(dry, 0, MAX_NODE_VOLUME);
       audio.wetGain.gain.value = clamp(wet, 0, MAX_NODE_REVERB);
+
+      // Pan so the sound appears on the side of the node relative to the cursor
+      // (cursor to the right → negative pan → more in the left speaker).
+      let targetPan = 0;
+      if (cursor.active && !(hovered && node !== hovered)) {
+        targetPan = clamp((node.renderX - cursor.x) / AUDIO_PAN_PIXEL_SCALE, -1, 1);
+      }
+      const pan =
+        audio.dryPanner.pan.value + (targetPan - audio.dryPanner.pan.value) * PAN_LERP;
+      audio.dryPanner.pan.value = clamp(pan, -1, 1);
+      audio.wetPanner.pan.value = audio.dryPanner.pan.value;
       // Pause when the shared distance envelope is effectively silent (not max(d,w),
       // which kept audio "on" from a loud wet path alone).
       const env =

@@ -12,11 +12,11 @@ import { ripplesVs, ripplesFs, renderVs, renderFs, basicVs, basicFs } from './sh
 import './style.css';
 
 /** Fired when the ripple shader applies a new random raindrop (strength ≈ 32..60). */
-/** @type {((strength: number) => void) | null} */
+/** @type {((strength: number, dropNormX: number) => void) | null} */
 let raindropSoundHandler = null;
 
 /**
- * @param {(strength: number) => void | null} fn
+ * @param {(strength: number, dropNormX: number) => void | null} fn — dropNormX is 0..1 across the ripple plane (viewport), left to right.
  */
 export function setRaindropSoundHandler(fn) {
   raindropSoundHandler = fn;
@@ -216,7 +216,10 @@ class WebGLLayer {
     this.ripples.uniforms.raindropPosition.value = this.raindrops.position.clone();
     this.ripples.uniforms.raindropStrength.value = 32.0 + Math.random() * 28.0;
     this.raindrops.nextDropTime = now + 2400 + Math.random() * 4400;
-    raindropSoundHandler?.(this.ripples.uniforms.raindropStrength.value);
+    raindropSoundHandler?.(
+      this.ripples.uniforms.raindropStrength.value,
+      this.raindrops.position.x,
+    );
   }
 
   addRenderPasses() {
